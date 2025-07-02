@@ -1,0 +1,52 @@
+#include <Wire.h>          // Required for I2C communication
+#include <Adafruit_GFX.h>  // Core graphics library
+#include <Adafruit_SSD1306.h> // Library for SSD1306 OLED displays
+
+// OLED display width and height, in pixels
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+
+// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+// The address 0x3C is common for 128x64 displays. Check your display's datasheet
+// or run an I2C scanner if it doesn't work.
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1); // -1 means no reset pin
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize I2C communication
+  // If you changed the default I2C pins (GPIO 21, 22), you would use:
+  // Wire.begin(SDA_PIN, SCL_PIN); // e.g., Wire.begin(13, 14);
+  Wire.begin(); 
+
+  // Initialize OLED display with I2C address 0x3C (most common)
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C for 128x64
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Don't proceed, loop forever
+  }
+
+  // Clear the buffer
+  display.clearDisplay();
+
+  // Set text size, color, and position
+  display.setTextSize(1.5);      // Normal 1:1 pixel scale
+  display.setTextColor(SSD1306_WHITE); // Draw white text
+  display.setCursor(0,0);     // Start at top-left corner
+
+  // Display text
+  display.println(F("Problem dey, better  call JESUS !"));
+
+  // Show the display buffer on the screen. MUST call this!
+  display.display();
+  delay(2000); // Pause for 2 seconds
+}
+
+void loop() {
+  // You can update the display here in your main loop
+  // For example, display sensor readings, etc.
+  // display.clearDisplay();
+  // display.setCursor(0,0);
+  // display.println("Time: " + String(millis()/1000));
+  // display.display();
+  // delay(1000);
+}
