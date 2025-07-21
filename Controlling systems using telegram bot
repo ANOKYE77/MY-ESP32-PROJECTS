@@ -1,0 +1,206 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+// make sure you have installed all these libraries in you IDE//
+
+// ===== CONFIGURATION ===== //
+#define WIFI_SSID "wifi"
+// insert your wifi name//
+#define WIFI_PASS "**********"
+// insert your wifi password//
+#define BOT_TOKEN "********************************"
+// insert your telegram bot token//
+#define CHAT_ID "******************"
+
+// Sensors
+#define PIR_PIN 4         // Must be interrupt-capable pin (most pins on ESP32)
+#define TRIG_PIN 13
+#define ECHO_PIN 12
+#define LED_PIN 2
+
+// PIR Settings
+#define PIR_WARMUP_TIME 30000  // 30 seconds for PIR to stabilize
+#define MOTION_TIMEOUT 2000    // 2 seconds of no motion before considering it stopped
+
+// System states
+volatile bool motionDetected = false;  // volatile for interrupt handler
+bool manualLedControl = false;
+unsigned long lastMotionTime = 0;
+unsigned long last_update_id = 0;
+
+// Function prototypes
+void sendTelegramMessage(String text);
+float getDistance();
+void handleTelegramCommands();
+String urlEncode(String str);
+void IRAM_ATTR handlePirInterrupt();
+
+void setup() {
+  Serial.begin(115200);
+  while(!Serial);
+  
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(PIR_PIN, INPUT_PULLUP);
+  digitalWrite(LED_PIN, LOW);
+
+  // Attach interrupt for immediate motion detection
+  attachInterrupt(digitalPinToInterrupt(PIR_PIN), handlePirInterrupt, CHANGE);
+
+  // PIR sensor warm-up
+  Serial.println("Waiting for PIR to stabilize...");
+  delay(PIR_WARMUP_TIME);
+  Serial.println("PIR sensor ready");
+
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  sendTelegramMessage("🤖 ESP32 booted successfully");
+}
+
+// Interrupt Service Routine for PIR sensor
+void IRAM_ATTR handlePirInterrupt() {
+  motionDetected = digitalRead(PIR_PIN);
+  if (motionDetected) {
+    lastMotionTime = millis();
+  }
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+
+  // Handle motion detection
+  if (motionDetected) {
+    if (!manualLedControl) {
+      digitalWrite(LED_PIN, HIGH);
+    }
+    
+    // Check if motion timeout has elapsed
+    if (currentTime - lastMotionTime > MOTION_TIMEOUT) {
+      motionDetected = false;
+      if (!manualLedControl) {
+        digitalWrite(LED_PIN, LOW);
+      }
+      Serial.println("Motion ended");
+    }
+  }
+
+  // Handle Telegram commands every second (independent of motion detection)
+  static unsigned long lastTelegramCheck = 0;
+  if (currentTime - lastTelegramCheck >= 1000) {
+    lastTelegramCheck = currentTime;
+    handleTelegramCommands();
+  }
+
+  // Optional: Add distance measurement only when motion is active
+  if (motionDetected && currentTime - lastMotionTime < 1000) {
+    static unsigned long lastDistanceCheck = 0;
+    if (currentTime - lastDistanceCheck >= 500) {  // Check distance every 500ms during motion
+      lastDistanceCheck = currentTime;
+      float distance = getDistance();
+      if (distance < 100) {  // Only send if object is close
+        sendTelegramMessage("🚨 Motion detected! Distance: " + String(distance) + "cm");
+      }
+    }
+  }
+}
+
+float getDistance() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  
+  unsigned long timeout = micros() + 25000;
+  while(digitalRead(ECHO_PIN) == LOW && micros() < timeout);
+  
+  long startTime = micros();
+  while(digitalRead(ECHO_PIN) == HIGH && micros() < timeout);
+  long duration = micros() - startTime;
+  
+  return duration * 0.034 / 2;
+}
+
+void sendTelegramMessage(String text) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  HTTPClient http;
+  String url = "https://api.telegram.org/bot" + String(BOT_TOKEN) + "/sendMessage?chat_id=" + String(CHAT_ID) + "&text=" + urlEncode(text);
+  
+  if (http.begin(url)) {
+    int httpCode = http.GET();
+    if (httpCode == 200) {
+      Serial.println("Message sent");
+    }
+    http.end();
+  }
+}
+
+void handleTelegramCommands() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  HTTPClient http;
+  String url = "https://api.telegram.org/bot" + String(BOT_TOKEN) + "/getUpdates?offset=" + String(last_update_id + 1);
+  
+  if (http.begin(url)) {
+    int httpCode = http.GET();
+    if (httpCode == 200) {
+      String payload = http.getString();
+      DynamicJsonDocument doc(2048);
+      deserializeJson(doc, payload);
+      
+      if (doc["result"].size() > 0) {
+        for (JsonObject update : doc["result"].as<JsonArray>()) {
+          last_update_id = update["update_id"];
+          JsonObject message = update["message"];
+          String command = message["text"].as<String>();
+          
+          if (command == "/led_on") {
+            manualLedControl = true;
+            digitalWrite(LED_PIN, HIGH);
+            sendTelegramMessage("💡 LED manually activated");
+          } 
+          else if (command == "/led_off") {
+            manualLedControl = true;
+            digitalWrite(LED_PIN, LOW);
+            sendTelegramMessage("🌑 LED manually deactivated");
+          }
+          else if (command == "/auto") {
+            manualLedControl = false;
+            sendTelegramMessage("🤖 LED control returned to automatic mode");
+          }
+          else if (command == "/status") {
+            String status = "🚨 Motion: " + String(motionDetected ? "DETECTED" : "none") + "\n";
+            status += "💡 LED: " + String(digitalRead(LED_PIN) ? "ON" : "OFF") + " (";
+            status += manualLedControl ? "manual" : "auto";
+            status += ")";
+            sendTelegramMessage(status);
+          }
+        }
+      }
+    }
+    http.end();
+  }
+}
+
+String urlEncode(String str) {
+  String encodedString = "";
+  for (unsigned int i = 0; i < str.length(); i++) {
+    char c = str.charAt(i);
+    if (isalnum(c)) {
+      encodedString += c;
+    } else if (c == ' ') {
+      encodedString += '+';
+    } else {
+      encodedString += '%';
+      encodedString += String(c, HEX);
+    }
+  }
+  return encodedString;
+}
